@@ -1,0 +1,16 @@
+[package]
+name = "ringroute"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+bitfield-struct = "0.13.0"
+env_logger = "0.11.11"
+libc = "0.2.189"
+log = "0.4.34"
+socket2 = { version = "0.6.5", features = ["all"] }
+slab = "0.4.11"
+clap = { version = "4.6.6", features = ["derive"] }
+io-uring = "0.7.15"
+io_uring_buf_ring = "0.2.3"
