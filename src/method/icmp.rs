@@ -7,7 +7,7 @@ use std::{
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 use super::{Method, ProbeId, Replies, Reply, ReplyKind, ReplyQueue, Unreachable};
-use crate::net::{MIN_IPV4_HEADER_LEN, internet_checksum};
+use crate::net::MIN_IPV4_HEADER_LEN;
 
 const ECHO_HEADER_LEN: usize = 8;
 
@@ -126,10 +126,8 @@ impl Method for Icmp {
         packet[0] = ECHO_REQUEST;
         // We use the sequence number to store the probe's identifier.
         packet[6..8].copy_from_slice(&id.0.to_be_bytes());
-
-        let checksum = internet_checksum(&packet).to_be_bytes();
-        packet[2..4].copy_from_slice(&checksum);
-
+        // 2..4: The kernel computes the checksum for us, which we rely on
+        // regardless so long as it picks the identifier.
         (packet, SockAddr::from(SocketAddrV4::new(self.target, 0)))
     }
 
@@ -150,7 +148,7 @@ mod test {
             Icmp, Method, ProbeId, Replies, Reply, ReplyKind, Unreachable,
             icmp::{DEST_UNREACH, ECHO_REQUEST, EchoReplies, ErrorReplies, TIME_EXCEEDED},
         },
-        net::{IcmpError, MIN_IPV4_HEADER_LEN, internet_checksum},
+        net::{IcmpError, MIN_IPV4_HEADER_LEN},
     };
 
     const TARGET: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
@@ -211,17 +209,12 @@ mod test {
         }
     }
 
-    /// Probes set a valid checksum.
+    /// Probes are echo requests.
     #[test]
-    fn test_probe_sets_checksum() {
-        for packet_len in [Icmp::MIN_PACKET_LEN, PACKET_LENGTH, 1500] {
-            let (packet, _) = Icmp::try_new(TARGET, packet_len).unwrap().probe(PROBE_ID);
-
-            assert_eq!(packet[0], ECHO_REQUEST);
-            assert_eq!(packet[1], 0);
-            // A packet carrying a correct checksum sums to zero.
-            assert_eq!(internet_checksum(&packet), 0, "packet length {packet_len}");
-        }
+    fn test_probe_is_echo_request() {
+        let packet = probe();
+        assert_eq!(packet[0], ECHO_REQUEST);
+        assert_eq!(packet[1], 0);
     }
 
     /// Probes are identified correctly from their quoted replies.

@@ -164,6 +164,7 @@ pub fn parse_ip_recverr(control: &[u8]) -> Option<ExtendedError<'_>> {
     None
 }
 
+#[expect(dead_code, reason = "kept for future methods that send on raw sockets")]
 pub fn internet_checksum(bytes: &[u8]) -> u16 {
     let mut sum = 0_u32;
 
