@@ -48,7 +48,7 @@ When not set, `RUST_LOG` defaults to `error`.
 
 ## Limitations
 
-- Only ICMP probes over IPv4 are implemented.
+- Only ICMP probes are implemented.
 - One probe is sent per hop, and all hops are probed at once.
 - The trace always waits for the full timeout before printing results.
 - Options to influence routing (eg. specifying source address, network device)
