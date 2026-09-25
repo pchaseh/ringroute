@@ -9,6 +9,9 @@ use socket2::{Domain, Socket};
 /// Minimum IPv4 header length.
 pub const MIN_IPV4_HEADER_LEN: usize = 20;
 
+/// IPv6 header length, which is never variable.
+pub const IPV6_HEADER_LENGTH: usize = 40;
+
 /// Enable `IP_RECVERR`/`IPV6_RECVERR` on the socket so ICMP errors can be
 /// read from the socket error queue.
 pub fn enable_recverr(socket: &Socket) -> io::Result<()> {
