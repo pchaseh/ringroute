@@ -1,12 +1,10 @@
 mod icmp;
-mod icmpv6;
 
 use std::{io, net::IpAddr, rc::Rc};
 
 use socket2::{SockAddr, Socket};
 
 pub use icmp::Icmp;
-pub use icmpv6::Icmpv6;
 
 use crate::net::IcmpError;
 

@@ -13,8 +13,6 @@ use clap::{Parser, ValueEnum};
 use method::Icmp;
 use trace::Probe;
 
-use crate::method::Icmpv6;
-
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum MethodArg {
     Icmp,
@@ -22,9 +20,8 @@ enum MethodArg {
 
 impl MethodArg {
     fn build(self, target: IpAddr, packet_len: usize) -> anyhow::Result<Box<dyn method::Method>> {
-        match (self, target) {
-            (Self::Icmp, IpAddr::V4(target)) => Ok(Box::new(Icmp::try_new(target, packet_len)?)),
-            (Self::Icmp, IpAddr::V6(target)) => Ok(Box::new(Icmpv6::try_new(target, packet_len)?)),
+        match self {
+            Self::Icmp => Ok(Box::new(Icmp::try_new(target, packet_len)?)),
         }
     }
 }
