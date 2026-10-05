@@ -1,12 +1,14 @@
 mod icmp;
+mod udp;
 
-use std::{io, net::IpAddr, rc::Rc};
+use std::{io, rc::Rc};
 
 use socket2::{SockAddr, Socket};
 
 pub use icmp::Icmp;
+pub use udp::Udp;
 
-use crate::net::IcmpError;
+use crate::icmp::IcmpError;
 
 /// One queue the trace reads from.
 pub struct ReplyQueue {
@@ -45,7 +47,10 @@ impl ProbeId {
 
 /// A response read from one of our queues.
 pub struct Reply<'a> {
-    pub source: Option<IpAddr>,
+    pub source: Option<SockAddr>,
+    /// Where the dropped datagram was sent, including its destination port.
+    /// Only set when the reply arrived on the socket error queue.
+    pub destination: Option<SockAddr>,
     /// Either the reply or the datagram an intermediate node quoted back.
     pub quoted: &'a [u8],
     /// Set when the reply arrived on the socket error queue.

@@ -1,3 +1,4 @@
+mod icmp;
 mod method;
 mod net;
 mod trace;
@@ -10,18 +11,20 @@ use std::{
 use anyhow::{Context, bail};
 use clap::{Parser, ValueEnum};
 
-use method::Icmp;
+use method::{Icmp, Udp};
 use trace::Probe;
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum MethodArg {
     Icmp,
+    Udp,
 }
 
 impl MethodArg {
     fn build(self, target: IpAddr, packet_len: usize) -> anyhow::Result<Box<dyn method::Method>> {
         match self {
             Self::Icmp => Ok(Box::new(Icmp::try_new(target, packet_len)?)),
+            Self::Udp => Ok(Box::new(Udp::try_new(target, packet_len)?)),
         }
     }
 }

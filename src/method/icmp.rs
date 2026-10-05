@@ -8,6 +8,10 @@ use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 use super::{Method, ProbeId, Replies, Reply, ReplyKind, ReplyQueue};
 use crate::net::{IPV6_HEADER_LENGTH, MIN_IPV4_HEADER_LEN};
+use crate::{
+    icmp::{v4, v6},
+    method::Unreachable,
+};
 
 const ECHO_HEADER_LEN: usize = 8;
 
@@ -17,9 +21,6 @@ fn sequence(quoted: &[u8]) -> Option<ProbeId> {
     let sequence = quoted.get(6..8)?.try_into().ok()?;
     Some(ProbeId(u16::from_be_bytes(sequence)))
 }
-
-mod v4;
-mod v6;
 
 pub(crate) struct EchoReplies;
 
@@ -38,9 +39,7 @@ impl Replies for EchoReplies {
     }
 }
 
-pub(crate) struct ErrorReplies {
-    classify: fn(&Reply<'_>) -> ReplyKind,
-}
+pub(crate) struct ErrorReplies;
 
 impl Replies for ErrorReplies {
     fn identify(&self, reply: &Reply<'_>) -> Option<ProbeId> {
@@ -48,7 +47,11 @@ impl Replies for ErrorReplies {
     }
 
     fn classify(&self, reply: &Reply<'_>) -> ReplyKind {
-        (self.classify)(reply)
+        reply
+            .error
+            .map_or(ReplyKind::Unreachable(Unreachable::Marker("!?")), |error| {
+                error.kind()
+            })
     }
 }
 
@@ -58,7 +61,7 @@ pub struct Icmp {
 }
 
 impl Icmp {
-    const fn min_packet_len(target: IpAddr) -> usize {
+    pub const fn min_packet_len(target: IpAddr) -> usize {
         (match target {
             IpAddr::V4(_) => MIN_IPV4_HEADER_LEN,
             IpAddr::V6(_) => IPV6_HEADER_LENGTH,
@@ -106,13 +109,6 @@ impl Method for Icmp {
 
         let socket = Rc::new(socket);
 
-        let errors = ErrorReplies {
-            classify: match self.target {
-                IpAddr::V4(_) => v4::classify,
-                IpAddr::V6(_) => v6::classify,
-            },
-        };
-
         Ok((
             socket.clone(),
             vec![
@@ -124,7 +120,7 @@ impl Method for Icmp {
                 ReplyQueue {
                     socket,
                     err_queue: true,
-                    replies: Box::new(errors),
+                    replies: Box::new(ErrorReplies),
                 },
             ],
         ))
@@ -155,8 +151,8 @@ mod test {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     use crate::method::{
-        Icmp, Method, ProbeId, Replies, Reply, ReplyKind,
-        icmp::{EchoReplies, ErrorReplies, v4, v6},
+        Icmp, Method, ProbeId, Replies, Reply, ReplyKind, Unreachable,
+        icmp::{EchoReplies, ErrorReplies},
     };
 
     const TARGETS: [IpAddr; 2] = [
@@ -169,17 +165,9 @@ mod test {
     fn reply(quoted: &[u8]) -> Reply<'_> {
         Reply {
             source: None,
+            destination: None,
             quoted,
             error: None,
-        }
-    }
-
-    fn error_replies(target: IpAddr) -> ErrorReplies {
-        ErrorReplies {
-            classify: match target {
-                IpAddr::V4(_) => v4::classify,
-                IpAddr::V6(_) => v6::classify,
-            },
         }
     }
 
@@ -195,7 +183,7 @@ mod test {
     fn test_identify_quoted_probe() {
         for target in TARGETS {
             assert_eq!(
-                error_replies(target).identify(&reply(&probe(target))),
+                ErrorReplies.identify(&reply(&probe(target))),
                 Some(PROBE_ID),
                 "{target}"
             );
@@ -221,7 +209,7 @@ mod test {
         for target in TARGETS {
             let packet = probe(target);
             let truncated = reply(&packet[..7]);
-            assert_eq!(error_replies(target).identify(&truncated), None, "{target}");
+            assert_eq!(ErrorReplies.identify(&truncated), None, "{target}");
             assert_eq!(EchoReplies.identify(&truncated), None, "{target}");
         }
     }
@@ -238,10 +226,135 @@ mod test {
         }
     }
 
+    /// Error queue replies without an ICMP error are marked unknown.
+    #[test]
+    fn test_classify_without_error() {
+        assert_eq!(
+            ErrorReplies.classify(&reply(&[])),
+            ReplyKind::Unreachable(Unreachable::Marker("!?"))
+        );
+    }
+
     /// "Host Unreachable" messages are ignored by the [`EchoReplies`] reader.
     #[test]
     fn test_echo_replies_ignore_host_unreachable() {
         assert!(EchoReplies.ignores_read_error(-libc::EHOSTUNREACH));
         assert!(!EchoReplies.ignores_read_error(-libc::ECONNREFUSED));
+    }
+
+    mod v4 {
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        use socket2::SockAddr;
+
+        use crate::{
+            icmp::v4::ECHO_REQUEST,
+            method::{Icmp, Method, ProbeId},
+            net::MIN_IPV4_HEADER_LEN,
+        };
+
+        const TARGET: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        const PACKET_LENGTH: usize = 60;
+        const PROBE_ID: ProbeId = ProbeId(1234);
+
+        fn probe() -> Vec<u8> {
+            let (packet, _) = Icmp::try_new(TARGET, PACKET_LENGTH)
+                .unwrap()
+                .probe(PROBE_ID);
+            packet
+        }
+
+        /// Probes are addressed to the provided target.
+        #[test]
+        fn test_probe_addresses_target() {
+            let icmp = Icmp::try_new(TARGET, PACKET_LENGTH).unwrap();
+            let (_, address) = icmp.probe(PROBE_ID);
+            assert_eq!(address, SockAddr::from(SocketAddr::new(TARGET, 0)));
+        }
+
+        /// Packets that are below the minimum length are rejected.
+        #[test]
+        fn test_rejects_too_small_packet() {
+            assert!(Icmp::try_new(TARGET, 0).is_err());
+            assert!(Icmp::try_new(TARGET, Icmp::min_packet_len(TARGET) - 1).is_err());
+        }
+
+        /// Probes use the provided length.
+        #[test]
+        fn test_probe_length() {
+            for packet_len in [Icmp::min_packet_len(TARGET), PACKET_LENGTH, 1500] {
+                let icmp = Icmp::try_new(TARGET, packet_len).unwrap();
+                let (packet, _) = icmp.probe(PROBE_ID);
+
+                assert_eq!(packet.len(), packet_len - MIN_IPV4_HEADER_LEN);
+                assert_eq!(packet.len(), icmp.max_reply_len());
+            }
+        }
+
+        /// Probes are echo requests.
+        #[test]
+        fn test_probe_is_echo_request() {
+            let packet = probe();
+            assert_eq!(packet[0], ECHO_REQUEST);
+            assert_eq!(packet[1], 0);
+        }
+    }
+
+    mod v6 {
+        use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+
+        use socket2::SockAddr;
+
+        use crate::{
+            icmp::v6::ECHO_REQUEST,
+            method::{Icmp, Method, ProbeId},
+            net::IPV6_HEADER_LENGTH,
+        };
+
+        const TARGET: IpAddr = IpAddr::V6(Ipv6Addr::LOCALHOST);
+        const PACKET_LENGTH: usize = 60;
+        const PROBE_ID: ProbeId = ProbeId(1234);
+
+        fn probe() -> Vec<u8> {
+            let (packet, _) = Icmp::try_new(TARGET, PACKET_LENGTH)
+                .unwrap()
+                .probe(PROBE_ID);
+            packet
+        }
+
+        /// Probes are addressed to the provided target.
+        #[test]
+        fn test_probe_addresses_target() {
+            let icmp = Icmp::try_new(TARGET, PACKET_LENGTH).unwrap();
+            let (_, address) = icmp.probe(PROBE_ID);
+            assert_eq!(address, SockAddr::from(SocketAddr::new(TARGET, 0)));
+        }
+
+        /// Packets that are below the minimum length are rejected.
+        #[test]
+        fn test_rejects_too_small_packet() {
+            assert!(Icmp::try_new(TARGET, 0).is_err());
+            assert!(Icmp::try_new(TARGET, Icmp::min_packet_len(TARGET) - 1).is_err());
+        }
+
+        /// Probes use the provided length.
+        #[test]
+        fn test_probe_length() {
+            for packet_len in [Icmp::min_packet_len(TARGET), PACKET_LENGTH, 1500] {
+                let icmp = Icmp::try_new(TARGET, packet_len).unwrap();
+                let (packet, _) = icmp.probe(PROBE_ID);
+
+                assert_eq!(packet.len(), packet_len - IPV6_HEADER_LENGTH);
+                assert_eq!(packet.len(), icmp.max_reply_len());
+            }
+        }
+
+        /// Probes are echo requests.
+        #[test]
+        fn test_probe_is_echo_request() {
+            let packet = probe();
+            assert_eq!(packet[0], ECHO_REQUEST);
+            assert_eq!(packet[1], 0);
+        }
     }
 }

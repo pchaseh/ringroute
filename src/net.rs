@@ -1,10 +1,12 @@
 use std::{
     io, mem,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6},
     os::fd::AsRawFd,
 };
 
-use socket2::{Domain, Socket};
+use socket2::{Domain, SockAddr, Socket};
+
+use crate::icmp::IcmpError;
 
 /// Minimum IPv4 header length.
 pub const MIN_IPV4_HEADER_LEN: usize = 20;
@@ -40,16 +42,6 @@ pub fn enable_recverr(socket: &Socket) -> io::Result<()> {
     Ok(())
 }
 
-/// An ICMP error reported through the socket error queue.
-#[derive(Debug, Clone, Copy)]
-pub struct IcmpError {
-    pub icmp_type: u8,
-    pub icmp_code: u8,
-    /// Type-specific data, such as the next hop's MTU when fragmentation is
-    /// needed.
-    pub info: u32,
-}
-
 /// Contains a subset of the `sock_extended_err` fields that are of interest.
 pub struct ExtendedError<'a> {
     pub error: IcmpError,
@@ -76,7 +68,7 @@ pub const RECVERR_CONTROL_LEN: usize = unsafe {
 } as usize;
 
 /// Parse a `sockaddr_in` or `sockaddr_in6` if `bytes` contains one, or else return `None`
-pub fn parse_sockaddr(bytes: &[u8]) -> Option<IpAddr> {
+pub fn parse_sockaddr(bytes: &[u8]) -> Option<SockAddr> {
     let family = u16::from_ne_bytes(bytes.get(..2)?.try_into().ok()?);
 
     match i32::from(family) {
@@ -88,8 +80,9 @@ pub fn parse_sockaddr(bytes: &[u8]) -> Option<IpAddr> {
             // SAFETY: `get` checked the length, and an unaligned read needs no more.
             let address = unsafe { address.read_unaligned() };
 
-            Some(IpAddr::V4(Ipv4Addr::from(
-                address.sin_addr.s_addr.to_ne_bytes(),
+            Some(SockAddr::from(SocketAddrV4::new(
+                Ipv4Addr::from(address.sin_addr.s_addr.to_ne_bytes()),
+                u16::from_be(address.sin_port),
             )))
         }
         libc::AF_INET6 => {
@@ -100,7 +93,12 @@ pub fn parse_sockaddr(bytes: &[u8]) -> Option<IpAddr> {
             // SAFETY: `get` checked the length, and an unaligned read needs no more.
             let address = unsafe { address.read_unaligned() };
 
-            Some(IpAddr::V6(Ipv6Addr::from(address.sin6_addr.s6_addr)))
+            Some(SockAddr::from(SocketAddrV6::new(
+                Ipv6Addr::from(address.sin6_addr.s6_addr),
+                u16::from_be(address.sin6_port),
+                address.sin6_flowinfo,
+                address.sin6_scope_id,
+            )))
         }
         _ => None,
     }
@@ -144,19 +142,22 @@ pub fn parse_ip_recverr(control: &[u8]) -> Option<ExtendedError<'_>> {
                     .read_unaligned()
             };
 
-            if !matches!(
-                error.ee_origin,
-                libc::SO_EE_ORIGIN_ICMP | libc::SO_EE_ORIGIN_ICMP6
-            ) {
-                return None;
-            }
-
-            return Some(ExtendedError {
-                error: IcmpError {
+            let icmp_error = match error.ee_origin {
+                libc::SO_EE_ORIGIN_ICMP => IcmpError::V4 {
                     icmp_type: error.ee_type,
-                    icmp_code: error.ee_code,
+                    code: error.ee_code,
                     info: error.ee_info,
                 },
+                libc::SO_EE_ORIGIN_ICMP6 => IcmpError::V6 {
+                    icmp_type: error.ee_type,
+                    code: error.ee_code,
+                    info: error.ee_info,
+                },
+                _ => return None,
+            };
+
+            return Some(ExtendedError {
+                error: icmp_error,
                 source_bytes: &control[error_end..cmsg_end],
             });
         }

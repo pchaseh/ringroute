@@ -280,7 +280,7 @@ fn handle_read(
         unsafe { buf_ring.get_buf(buffer_id, len) }.expect("buffer ring contains buffer ID");
     let message = RecvMsgOut::parse(&buffer, &reader.msghdr).expect("parsing msghdr");
 
-    let (source, error) = if reader.queue.err_queue {
+    let (source, destination, error) = if reader.queue.err_queue {
         if message.is_control_data_truncated() {
             error!("error queue cmsg did not fit in {RECVERR_CONTROL_LEN} bytes");
             return;
@@ -289,12 +289,17 @@ fn handle_read(
         let Some(extended) = parse_ip_recverr(message.control_data()) else {
             return;
         };
-        (parse_sockaddr(extended.source_bytes), Some(extended.error))
+        (
+            parse_sockaddr(extended.source_bytes),
+            parse_sockaddr(message.name_data()),
+            Some(extended.error),
+        )
     } else {
-        (parse_sockaddr(message.name_data()), None)
+        (parse_sockaddr(message.name_data()), None, None)
     };
     let reply = Reply {
         source,
+        destination,
         quoted: message.payload_data(),
         error,
     };
@@ -315,7 +320,10 @@ fn handle_read(
     };
 
     probe.result = Some(HopResult {
-        source: reply.source,
+        source: reply
+            .source
+            .as_ref()
+            .map(|a| a.as_socket().expect("source is a socket address").ip()),
         rtt: sent_at.elapsed(),
         kind: reader.queue.replies.classify(&reply),
     });
