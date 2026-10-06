@@ -7,18 +7,18 @@ use std::{
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 use super::{Method, ProbeId, Replies, Reply, ReplyKind, ReplyQueue};
-use crate::net::{IPV6_HEADER_LENGTH, MIN_IPV4_HEADER_LEN};
+use crate::icmp::{v4, v6};
 use crate::{
-    icmp::{v4, v6},
-    method::Unreachable,
+    method::ErrorReplies,
+    net::{IPV6_HEADER_LENGTH, MIN_IPV4_HEADER_LEN},
 };
 
 const ECHO_HEADER_LEN: usize = 8;
 
 /// The sequence number, which sits at the same offset in an echo reply as in
 /// the request a router quotes back.
-fn sequence(quoted: &[u8]) -> Option<ProbeId> {
-    let sequence = quoted.get(6..8)?.try_into().ok()?;
+fn sequence(reply: &Reply<'_>) -> Option<ProbeId> {
+    let sequence = reply.quoted.get(6..8)?.try_into().ok()?;
     Some(ProbeId(u16::from_be_bytes(sequence)))
 }
 
@@ -26,7 +26,7 @@ pub(crate) struct EchoReplies;
 
 impl Replies for EchoReplies {
     fn identify(&self, reply: &Reply<'_>) -> Option<ProbeId> {
-        sequence(reply.quoted)
+        sequence(reply)
     }
 
     fn classify(&self, _reply: &Reply<'_>) -> ReplyKind {
@@ -36,22 +36,6 @@ impl Replies for EchoReplies {
 
     fn ignores_read_error(&self, error: i32) -> bool {
         error == -libc::EHOSTUNREACH
-    }
-}
-
-pub(crate) struct ErrorReplies;
-
-impl Replies for ErrorReplies {
-    fn identify(&self, reply: &Reply<'_>) -> Option<ProbeId> {
-        sequence(reply.quoted)
-    }
-
-    fn classify(&self, reply: &Reply<'_>) -> ReplyKind {
-        reply
-            .error
-            .map_or(ReplyKind::Unreachable(Unreachable::Marker("!?")), |error| {
-                error.kind()
-            })
     }
 }
 
@@ -120,7 +104,7 @@ impl Method for Icmp {
                 ReplyQueue {
                     socket,
                     err_queue: true,
-                    replies: Box::new(ErrorReplies),
+                    replies: Box::new(ErrorReplies { identify: sequence }),
                 },
             ],
         ))
@@ -151,8 +135,8 @@ mod test {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     use crate::method::{
-        Icmp, Method, ProbeId, Replies, Reply, ReplyKind, Unreachable,
-        icmp::{EchoReplies, ErrorReplies},
+        ErrorReplies, Icmp, Method, ProbeId, Replies, Reply, ReplyKind,
+        icmp::{EchoReplies, sequence},
     };
 
     const TARGETS: [IpAddr; 2] = [
@@ -178,12 +162,14 @@ mod test {
         packet
     }
 
+    const ERROR_REPLIES: ErrorReplies = ErrorReplies { identify: sequence };
+
     /// Probes are identified correctly from their quoted replies.
     #[test]
     fn test_identify_quoted_probe() {
         for target in TARGETS {
             assert_eq!(
-                ErrorReplies.identify(&reply(&probe(target))),
+                ERROR_REPLIES.identify(&reply(&probe(target))),
                 Some(PROBE_ID),
                 "{target}"
             );
@@ -209,7 +195,7 @@ mod test {
         for target in TARGETS {
             let packet = probe(target);
             let truncated = reply(&packet[..7]);
-            assert_eq!(ErrorReplies.identify(&truncated), None, "{target}");
+            assert_eq!(ERROR_REPLIES.identify(&truncated), None, "{target}");
             assert_eq!(EchoReplies.identify(&truncated), None, "{target}");
         }
     }
@@ -224,15 +210,6 @@ mod test {
                 "{target}"
             );
         }
-    }
-
-    /// Error queue replies without an ICMP error are marked unknown.
-    #[test]
-    fn test_classify_without_error() {
-        assert_eq!(
-            ErrorReplies.classify(&reply(&[])),
-            ReplyKind::Unreachable(Unreachable::Marker("!?"))
-        );
     }
 
     /// "Host Unreachable" messages are ignored by the [`EchoReplies`] reader.

@@ -35,6 +35,26 @@ pub trait Replies {
     }
 }
 
+/// Interprets the replies arriving on a socket error queue.
+pub(crate) struct ErrorReplies {
+    /// Identifies which probe a reply answers.
+    pub identify: fn(&Reply<'_>) -> Option<ProbeId>,
+}
+
+impl Replies for ErrorReplies {
+    fn identify(&self, reply: &Reply<'_>) -> Option<ProbeId> {
+        (self.identify)(reply)
+    }
+
+    fn classify(&self, reply: &Reply<'_>) -> ReplyKind {
+        reply
+            .error
+            .map_or(ReplyKind::Unreachable(Unreachable::Marker("!?")), |error| {
+                error.kind()
+            })
+    }
+}
+
 /// Identifies one probe in flight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProbeId(pub u16);
@@ -114,7 +134,23 @@ pub trait Method {
 
 #[cfg(test)]
 mod test {
-    use super::Unreachable;
+    use crate::{
+        icmp::{self, IcmpError},
+        method::{ErrorReplies, Replies, Reply, ReplyKind, Unreachable},
+    };
+
+    const ERROR_REPLIES: ErrorReplies = ErrorReplies {
+        identify: |_reply| None,
+    };
+
+    fn reply(error: Option<IcmpError>) -> Reply<'static> {
+        Reply {
+            source: None,
+            destination: None,
+            quoted: &[],
+            error,
+        }
+    }
 
     /// Markers render the way traceroute prints them.
     #[test]
@@ -130,5 +166,25 @@ mod test {
             "!<11-1>"
         );
         assert_eq!(Unreachable::TooBig { mtu: 1400 }.to_string(), "!F-1400");
+    }
+
+    /// Error replies are classified by their ICMP error.
+    #[test]
+    fn test_classify_error_reply() {
+        let error = IcmpError::V4 {
+            icmp_type: icmp::v4::TIME_EXCEEDED,
+            code: 0,
+            info: 0,
+        };
+        assert_eq!(ERROR_REPLIES.classify(&reply(Some(error))), ReplyKind::Hop);
+    }
+
+    /// Error queue replies without an ICMP error are marked unknown.
+    #[test]
+    fn test_classify_without_error() {
+        assert_eq!(
+            ERROR_REPLIES.classify(&reply(None)),
+            ReplyKind::Unreachable(Unreachable::Marker("!?"))
+        );
     }
 }

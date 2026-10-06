@@ -7,7 +7,7 @@ use std::{
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 use crate::{
-    method::{Method, ProbeId, Replies, Reply, ReplyKind, ReplyQueue, Unreachable},
+    method::{ErrorReplies, Method, ProbeId, Replies, Reply, ReplyKind, ReplyQueue},
     net::{IPV6_HEADER_LENGTH, MIN_IPV4_HEADER_LEN},
 };
 
@@ -47,23 +47,11 @@ impl Replies for UdpReplies {
     }
 }
 
-struct ErrorReplies;
-
-impl Replies for ErrorReplies {
-    fn identify(&self, reply: &Reply<'_>) -> Option<ProbeId> {
-        // The port must be read from `msg_name` because `quoted` only includes the
-        // quoted UDP payload and not its header.
-        let port = reply.destination.as_ref()?.as_socket()?.port();
-        port.checked_sub(START_PORT).map(ProbeId)
-    }
-
-    fn classify(&self, reply: &Reply<'_>) -> ReplyKind {
-        reply
-            .error
-            .map_or(ReplyKind::Unreachable(Unreachable::Marker("!?")), |error| {
-                error.kind()
-            })
-    }
+pub(crate) fn identify_from_error(reply: &Reply<'_>) -> Option<ProbeId> {
+    // The port must be read from `msg_name` because `quoted` only includes the
+    // quoted UDP payload and not its header.
+    let port = reply.destination.as_ref()?.as_socket()?.port();
+    port.checked_sub(START_PORT).map(ProbeId)
 }
 
 impl Udp {
@@ -124,7 +112,9 @@ impl Method for Udp {
                 ReplyQueue {
                     socket,
                     err_queue: true,
-                    replies: Box::new(ErrorReplies),
+                    replies: Box::new(ErrorReplies {
+                        identify: identify_from_error,
+                    }),
                 },
             ],
         ))
@@ -150,10 +140,9 @@ mod test {
     use socket2::SockAddr;
 
     use crate::{
-        icmp::{IcmpError, v4},
         method::{
-            Method, ProbeId, Replies, Reply, ReplyKind, Udp, Unreachable,
-            udp::{ErrorReplies, START_PORT, UDP_HEADER_LEN, UdpReplies},
+            ErrorReplies, Method, ProbeId, Replies, Reply, Udp,
+            udp::{START_PORT, UDP_HEADER_LEN, UdpReplies, identify_from_error},
         },
         net::{IPV6_HEADER_LENGTH, MIN_IPV4_HEADER_LEN},
     };
@@ -172,12 +161,12 @@ mod test {
         }) + UDP_HEADER_LEN
     }
 
-    fn reply(destination: Option<SockAddr>, error: Option<IcmpError>) -> Reply<'static> {
+    fn reply(destination: Option<SockAddr>) -> Reply<'static> {
         Reply {
             source: None,
             destination,
             quoted: &[],
-            error,
+            error: None,
         }
     }
 
@@ -197,6 +186,10 @@ mod test {
     fn udp_replies(target: IpAddr) -> UdpReplies {
         UdpReplies { target }
     }
+
+    const ERROR_REPLIES: ErrorReplies = ErrorReplies {
+        identify: identify_from_error,
+    };
 
     /// Probes are addressed to the provided target.
     #[test]
@@ -238,7 +231,7 @@ mod test {
     fn test_identify_error_reply() {
         for target in TARGETS {
             assert_eq!(
-                ErrorReplies.identify(&reply(sockaddr(target, START_PORT + PROBE_ID.0), None)),
+                ERROR_REPLIES.identify(&reply(sockaddr(target, START_PORT + PROBE_ID.0))),
                 Some(PROBE_ID),
                 "{target}"
             );
@@ -250,12 +243,12 @@ mod test {
     fn test_identify_rejects_unknown_destination() {
         for target in TARGETS {
             assert_eq!(
-                ErrorReplies.identify(&reply(sockaddr(target, START_PORT - 1), None)),
+                ERROR_REPLIES.identify(&reply(sockaddr(target, START_PORT - 1))),
                 None,
                 "{target}"
             );
         }
-        assert_eq!(ErrorReplies.identify(&reply(None, None)), None);
+        assert_eq!(ERROR_REPLIES.identify(&reply(None)), None);
     }
 
     /// Received replies are identified by the port they were sent from.
@@ -292,28 +285,5 @@ mod test {
 
             assert_eq!(udp_replies(target).identify(&received(None)), None);
         }
-    }
-
-    /// Error replies are classified by their ICMP error.
-    #[test]
-    fn test_classify_error_reply() {
-        let error = IcmpError::V4 {
-            icmp_type: v4::TIME_EXCEEDED,
-            code: 0,
-            info: 0,
-        };
-        assert_eq!(
-            ErrorReplies.classify(&reply(None, Some(error))),
-            ReplyKind::Hop
-        );
-    }
-
-    /// Error queue replies without an ICMP error are marked unknown.
-    #[test]
-    fn test_classify_without_error() {
-        assert_eq!(
-            ErrorReplies.classify(&reply(None, None)),
-            ReplyKind::Unreachable(Unreachable::Marker("!?"))
-        );
     }
 }
