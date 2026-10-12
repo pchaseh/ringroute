@@ -11,13 +11,14 @@ use std::{
 use anyhow::{Context, bail};
 use clap::{Parser, ValueEnum};
 
-use method::{Icmp, Udp};
+use method::{Icmp, Tcp, Udp};
 use trace::Probe;
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum MethodArg {
     Icmp,
     Udp,
+    Tcp,
 }
 
 impl MethodArg {
@@ -25,6 +26,7 @@ impl MethodArg {
         match self {
             Self::Icmp => Ok(Box::new(Icmp::try_new(target, packet_len)?)),
             Self::Udp => Ok(Box::new(Udp::try_new(target, packet_len)?)),
+            Self::Tcp => Ok(Box::new(Tcp::try_new(target)?)),
         }
     }
 }
@@ -58,7 +60,7 @@ pub(crate) struct Args {
     #[arg(short, long = "timeout-secs", value_name = "TIMEOUT_SECS", default_value = "5", value_parser = |s: &str| s.parse().map(Duration::from_secs))]
     timeout: Duration,
 
-    /// Packet size to use for probes, including IP headers.
+    /// Packet size to use for probes, including IP headers. Ignored for TCP.
     #[arg(short, long, default_value_t = 60)]
     size: usize,
 

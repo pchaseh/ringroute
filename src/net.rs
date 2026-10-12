@@ -167,21 +167,3 @@ pub fn parse_ip_recverr(control: &[u8]) -> Option<ExtendedError<'_>> {
 
     None
 }
-
-#[expect(dead_code, reason = "kept for future methods that send on raw sockets")]
-pub fn internet_checksum(bytes: &[u8]) -> u16 {
-    let mut sum = 0_u32;
-
-    for chunk in bytes.chunks(2) {
-        sum += u32::from(u16::from_be_bytes([
-            chunk[0],
-            chunk.get(1).copied().unwrap_or(0),
-        ]));
-    }
-
-    while sum >> 16 != 0 {
-        sum = (sum & 0xffff) + (sum >> 16);
-    }
-
-    !(sum as u16)
-}

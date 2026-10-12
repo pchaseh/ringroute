@@ -1,4 +1,5 @@
 mod icmp;
+mod tcp;
 mod udp;
 
 use std::{io, rc::Rc};
@@ -6,6 +7,7 @@ use std::{io, rc::Rc};
 use socket2::{SockAddr, Socket};
 
 pub use icmp::Icmp;
+pub use tcp::Tcp;
 pub use udp::Udp;
 
 use crate::icmp::IcmpError;
@@ -36,12 +38,12 @@ pub trait Replies {
 }
 
 /// Interprets the replies arriving on a socket error queue.
-pub(crate) struct ErrorReplies {
+pub(crate) struct ErrorReplies<F = fn(&Reply<'_>) -> Option<ProbeId>> {
     /// Identifies which probe a reply answers.
-    pub identify: fn(&Reply<'_>) -> Option<ProbeId>,
+    pub identify: F,
 }
 
-impl Replies for ErrorReplies {
+impl<F: Fn(&Reply<'_>) -> Option<ProbeId>> Replies for ErrorReplies<F> {
     fn identify(&self, reply: &Reply<'_>) -> Option<ProbeId> {
         (self.identify)(reply)
     }
