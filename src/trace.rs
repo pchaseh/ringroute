@@ -461,7 +461,15 @@ pub fn run(
                 let error = io::Error::from_raw_os_error(-ret);
                 error!("error completing {state:?}: {error:?}");
             }
-            if state == State::Timeout {
+
+            let done = (sending.is_empty()
+                && probes
+                    .iter()
+                    .map_while(|probe| probe.result.as_ref())
+                    .any(|result| result.kind.terminates_trace()))
+                || state == State::Timeout;
+
+            if done {
                 return Ok(probes);
             }
         }

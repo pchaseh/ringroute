@@ -50,6 +50,5 @@ When not set, `RUST_LOG` defaults to `error`.
 
 - Limited support for different probing methods.
 - One probe is sent per hop, and all hops are probed at once.
-- The trace always waits for the full timeout before printing results.
 - Options to influence routing (eg. specifying source address, network device)
   are not implemented.
