@@ -122,10 +122,11 @@ impl Method for Udp {
 
     fn probe(&self, id: ProbeId) -> (Vec<u8>, SockAddr) {
         let packet = vec![0; self.payload_len];
-        (
-            packet,
-            SockAddr::from(SocketAddr::new(self.target, START_PORT + id.0)),
-        )
+        let (mut port, overflowed) = START_PORT.overflowing_add(id.0);
+        if overflowed {
+            port += 1;
+        }
+        (packet, SockAddr::from(SocketAddr::new(self.target, port)))
     }
 
     fn max_reply_len(&self) -> usize {
@@ -197,6 +198,16 @@ mod test {
         for target in TARGETS {
             let (_, address) = Udp::try_new(target, PACKET_LENGTH).unwrap().probe(PROBE_ID);
             assert_eq!(address, sockaddr(target, START_PORT + PROBE_ID.0).unwrap());
+        }
+    }
+
+    /// Probe destination ports wrap to a minimum value of 1.
+    #[test]
+    fn test_probe_target_port_wraps() {
+        for target in TARGETS {
+            let probe_id = ProbeId((u16::MAX - START_PORT) + 1);
+            let (_, address) = Udp::try_new(target, PACKET_LENGTH).unwrap().probe(probe_id);
+            assert_eq!(address, sockaddr(target, 1).unwrap());
         }
     }
 

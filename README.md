@@ -17,7 +17,7 @@ the TTL would reduce it to zero, the router discards the packet and will
 typically send an ICMP Time Exceeded message back to the sender. These responses
 reveal the router's own IP address. To discover the path to a target, ringroute
 sends probes with increasing TTL values. A probe sent with TTL _N_ expires at
-the _N_th hop, allowing us to identify that device from its ICMP response.
+the *N*th hop, allowing us to identify that device from its ICMP response.
 
 ## Usage
 
@@ -49,6 +49,6 @@ When not set, `RUST_LOG` defaults to `error`.
 ## Limitations
 
 - Limited support for different probing methods.
-- One probe is sent per hop, and all hops are probed at once.
+- All hops are probed at once.
 - Options to influence routing (eg. specifying source address, network device)
   are not implemented.

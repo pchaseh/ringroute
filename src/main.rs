@@ -14,6 +14,8 @@ use clap::{Parser, ValueEnum};
 use method::{Icmp, Tcp, Udp};
 use trace::Probe;
 
+const MAX_PROBES_PER_HOP: i64 = 10;
+
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum MethodArg {
     Icmp,
@@ -52,7 +54,7 @@ pub(crate) struct Args {
     #[arg(short, long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..))]
     first_hop: u8,
 
-    /// Max number of hops.
+    /// Max number of hops [max: 255].
     #[arg(short = 'H', long, default_value_t = 30, value_parser = clap::value_parser!(u8).range(1..))]
     max_hops: u8,
 
@@ -71,21 +73,44 @@ pub(crate) struct Args {
     /// IP version to use.
     #[arg(short, long, value_enum, default_value_t = IpVersionArg::Auto)]
     ip_version: IpVersionArg,
+
+    /// Number of probes to send per hop [max: 10].
+    #[arg(short, long, default_value_t = 3, value_parser = clap::value_parser!(u16).range(1..MAX_PROBES_PER_HOP))]
+    count: u16,
 }
 
 /// Print the results of a trace to standard output.
 fn print_results(probes: &[Probe]) {
-    for probe in probes {
+    for hop in probes.chunk_by(|a, b| a.ttl == b.ttl) {
+        print!("{:>2}", hop[0].ttl);
+        print_hop_probes(hop);
+        println!();
+
+        if hop
+            .iter()
+            .filter_map(|probe| probe.result.as_ref())
+            .any(|result| result.kind.terminates_trace())
+        {
+            break;
+        }
+    }
+}
+
+fn print_hop_probes(hop: &[Probe]) {
+    let mut last_source = None;
+    for probe in hop {
         match &probe.result {
             Some(result) => {
-                println!("{:>2}  {result}", probe.ttl);
-                // Because we submitted every probe at once, we'll observe
-                // multiple replies if the maximum TTL exceeded the final hop.
-                if result.kind.terminates_trace() {
-                    break;
+                if last_source != Some(result.source) {
+                    let source = result
+                        .source
+                        .map_or(String::from("?"), |source| source.to_string());
+                    print!("  {source}");
+                    last_source = Some(result.source);
                 }
+                print!("  {result}");
             }
-            None => println!("{:>2}  *", probe.ttl),
+            None => print!("  *"),
         }
     }
 }
@@ -149,6 +174,7 @@ fn main() -> anyhow::Result<()> {
         method.as_ref(),
         args.first_hop..=args.max_hops,
         args.timeout,
+        args.count,
     )?;
     print_results(&probes);
 

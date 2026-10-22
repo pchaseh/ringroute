@@ -1,5 +1,5 @@
 use std::{
-    io,
+    io, iter,
     marker::PhantomPinned,
     mem,
     net::IpAddr,
@@ -68,26 +68,18 @@ pub struct UserData {
 pub struct Probe {
     pub ttl: u8,
     sent_at: Option<Instant>,
-    pub result: Option<HopResult>,
+    pub result: Option<ProbeResult>,
 }
 
-pub struct HopResult {
+pub struct ProbeResult {
     pub source: Option<IpAddr>,
     pub rtt: Duration,
     pub kind: ReplyKind,
 }
 
-impl std::fmt::Display for HopResult {
+impl std::fmt::Display for ProbeResult {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let source = self
-            .source
-            .map_or(String::from("?"), |source| source.to_string());
-
-        write!(
-            formatter,
-            "{source}  {:.3} ms",
-            self.rtt.as_secs_f64() * 1_000.0
-        )?;
+        write!(formatter, "{:.3} ms", self.rtt.as_secs_f64() * 1_000.0)?;
         if let ReplyKind::Unreachable(annotation) = self.kind {
             write!(formatter, "  {annotation}")?;
         }
@@ -261,7 +253,7 @@ impl<'a> Multishot<'a> {
 
 /// Given a completion representing a successful receive, process the response.
 ///
-/// Records a [`HopResult`] for the probe the reply answers, unless that probe
+/// Records a [`ProbeResult`] for the probe the reply answers, unless that probe
 /// already has one.
 fn handle_read(
     cqe: &cqueue::Entry,
@@ -319,7 +311,7 @@ fn handle_read(
         return;
     };
 
-    probe.result = Some(HopResult {
+    probe.result = Some(ProbeResult {
         source: reply
             .source
             .as_ref()
@@ -352,6 +344,7 @@ pub fn run(
     method: &dyn Method,
     hops: RangeInclusive<u8>,
     timeout: Duration,
+    count: u16,
 ) -> anyhow::Result<Vec<Probe>> {
     check_features_supported()?;
 
@@ -359,6 +352,7 @@ pub fn run(
     let fd = socket.as_fd();
 
     let mut probes = hops
+        .flat_map(|ttl| iter::repeat_n(ttl, count as usize))
         .map(|ttl| Probe {
             ttl,
             sent_at: None,
@@ -464,9 +458,11 @@ pub fn run(
 
             let done = (sending.is_empty()
                 && probes
-                    .iter()
-                    .map_while(|probe| probe.result.as_ref())
-                    .any(|result| result.kind.terminates_trace()))
+                    .chunk_by(|a, b| a.ttl == b.ttl)
+                    .take_while(|hop| hop.iter().any(|p| p.result.is_some()))
+                    .flatten()
+                    .filter_map(|p| p.result.as_ref())
+                    .any(|r| r.kind.terminates_trace()))
                 || state == State::Timeout;
 
             if done {
